@@ -7,7 +7,11 @@ from selenium.webdriver.support.ui import Select
 import pandas as pd
 from tqdm import tqdm
 import time
-from user_agent import options
+from chrome_options import options
+import asyncio
+import os
+
+proccessed_stock_code = set()
 
 
 def getStockList():
@@ -44,20 +48,28 @@ def getStockList():
 
     # remove row if there is any null value
     df.dropna(inplace=True)
-    
-    #remove abnormal rows
+
+    # remove abnormal rows
     df = df[df["code"] != "KLCC__PROPERTY__HOLDINGS__BERHAD__stapled__5235SS"]
     df = df[df["code"] != "KLCC__REAL__ESTATE__INVESTMENT__TRUST__stapled__5235SS"]
 
     # Unique case: add a new row to the dataframe for KLCC Property Holdings Berhad & KLCC Real Estate Investment Trust
-    df.loc[len(df.index)] = ["5235SS", "KLCC PROPERTY HOLDINGS BERHAD & KLCC REAL ESTATE INVESTMENT TRUST"]
+    df.loc[len(df.index)] = [
+        "5235SS",
+        "KLCC PROPERTY HOLDINGS BERHAD & KLCC REAL ESTATE INVESTMENT TRUST",
+    ]
 
     df.to_csv("stock_list.csv", index=False)
-
     driver.quit()
 
 
-def getFinancialData():
+def getFinancialData(stock_code, progress_bar):
+    
+    if stock_code in proccessed_stock_code:
+        return
+    else:
+        print(f"Processing {stock_code, proccessed_stock_code}")
+
     driver = webdriver.Chrome(options=options)
     columns = [
         "Stock Code",
@@ -78,45 +90,63 @@ def getFinancialData():
     ]
 
     result = []
-    # read the csv file
-    df = pd.read_csv("stock_list.csv")
-    stock_code = df["code"].tolist()
 
-    for i in tqdm(stock_code):
-        try:
-            driver.get(
-                f"https://klse.i3investor.com/web/stock/financial-quarter/{i.format('04d')}"
-            )
+    try:
+        driver.get(
+            f"https://klse.i3investor.com/web/stock/financial-quarter/{stock_code.format('04d')}"
+        )
 
-            table = driver.find_element(By.ID, "dttable-fin-quarter")
-            rows = table.find_element(By.TAG_NAME, "tbody").find_elements(
-                By.TAG_NAME, "tr"
-            )
+        table = driver.find_element(By.ID, "dttable-fin-quarter")
+        rows = table.find_element(By.TAG_NAME, "tbody").find_elements(By.TAG_NAME, "tr")
 
-            for row in rows:
-                row_data = []
-                cells = row.find_elements(By.TAG_NAME, "td")
-                for cell in cells:
-                    if cell.text.startswith("Financial Year:"):
-                        financial_year = cell.text.split(":")[1].strip()
-                    else:
-                        row_data.append(cell.text)
-                if len(row_data) > 0:
-                    # append the stock code and financial year to the row data
-                    result.append([i, financial_year] + row_data)
-                    # write to csv
-                    df = pd.DataFrame(result, columns=columns)
+        for row in rows:
+            row_data = []
+            cells = row.find_elements(By.TAG_NAME, "td")
+            for cell in cells:
+                if cell.text.startswith("Financial Year:"):
+                    financial_year = cell.text.split(":")[1].strip()
+                else:
+                    row_data.append(cell.text)
+            if len(row_data) > 0:
+                # append the stock code and financial year to the row data
+                result.append([stock_code, financial_year] + row_data)
+                # write to csv
+                df = pd.DataFrame(result, columns=columns)
+
+                if os.path.exists("financial_data.csv"):
+                    df.to_csv("financial_data.csv", mode="a", header=False, index=False)
+                else:
                     df.to_csv("financial_data.csv", index=False)
-        except Exception as e:
-            # write stock code to error.txt
-            with open("error.txt", "a") as f:
-                f.write(f"{i}\n")
+                    
+                progress_bar.update(1)
+                proccessed_stock_code.add(stock_code)
+
+    except Exception as e:
+        # write stock code to error.txt
+        with open("error.txt", "a") as f:
+            f.write(f"{stock_code, e}\n")
     driver.quit()
 
 
-try:
-    pd.read_csv("stock_list.csv")
-except:
-    getStockList()
+def main():
+    try:
+        stock_code = pd.read_csv("stock_list.csv")
+    except:
+        getStockList()
+    df = pd.read_csv("stock_list.csv")
+    stock_code = df["code"].tolist()
+    # Initialize a progress bar
+    progress_bar = tqdm(total=len(stock_code), desc="Progress")
 
-getFinancialData()
+    loop = asyncio.get_event_loop()
+    tasks = [getFinancialData(code, progress_bar) for code in stock_code]
+
+    # Wait for all tasks to complete
+    loop.run_until_complete(asyncio.gather(*tasks))
+
+    # Close the progress bar
+    progress_bar.close()
+
+
+if __name__ == "__main__":
+    main()
