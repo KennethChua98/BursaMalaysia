@@ -8,10 +8,11 @@ import pandas as pd
 from tqdm import tqdm
 import time
 from chrome_options import options
-import asyncio
+from joblib import Parallel, delayed
+import threading
 import os
 
-proccessed_stock_code = set()
+lock = threading.Lock()
 
 
 def getStockList():
@@ -63,12 +64,10 @@ def getStockList():
     driver.quit()
 
 
-def getFinancialData(stock_code, progress_bar):
-    
-    if stock_code in proccessed_stock_code:
-        return
-    else:
-        print(f"Processing {stock_code, proccessed_stock_code}")
+def getFinancialData(stock_code):
+    lock.acquire()
+
+    print(stock_code)
 
     driver = webdriver.Chrome(options=options)
     columns = [
@@ -117,15 +116,13 @@ def getFinancialData(stock_code, progress_bar):
                     df.to_csv("financial_data.csv", mode="a", header=False, index=False)
                 else:
                     df.to_csv("financial_data.csv", index=False)
-                    
-                progress_bar.update(1)
-                proccessed_stock_code.add(stock_code)
-
     except Exception as e:
         # write stock code to error.txt
         with open("error.txt", "a") as f:
             f.write(f"{stock_code, e}\n")
-    driver.quit()
+    finally:
+        lock.release()
+        driver.quit()
 
 
 def main():
@@ -135,17 +132,12 @@ def main():
         getStockList()
     df = pd.read_csv("stock_list.csv")
     stock_code = df["code"].tolist()
-    # Initialize a progress bar
-    progress_bar = tqdm(total=len(stock_code), desc="Progress")
 
-    loop = asyncio.get_event_loop()
-    tasks = [getFinancialData(code, progress_bar) for code in stock_code]
-
-    # Wait for all tasks to complete
-    loop.run_until_complete(asyncio.gather(*tasks))
-
-    # Close the progress bar
-    progress_bar.close()
+    # get financial data for each stock code
+    
+    Parallel(n_jobs=-1, backend="threading")(
+        delayed(getFinancialData)(stock_code) for stock_code in stock_code
+    )
 
 
 if __name__ == "__main__":
